@@ -1,0 +1,72 @@
+name: ZyFlix Daily Movie Post
+
+on:
+  # Hollywood → BD সকাল ৯:০০ = UTC 03:00
+  # Bollywood → BD বিকাল ৫:০০ = UTC 11:00
+  schedule:
+    - cron: '0 3 * * *'    # Hollywood session
+    - cron: '0 11 * * *'   # Bollywood session
+  workflow_dispatch:
+    inputs:
+      session:
+        description: 'Which session to run?'
+        required: true
+        default: 'both'
+        type: choice
+        options:
+          - hollywood
+          - bollywood
+          - both
+
+jobs:
+  post-movies:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Restore posted history
+        uses: actions/cache@v3
+        with:
+          path: posted_movies.json
+          key: posted-${{ github.run_number }}
+          restore-keys: posted-
+
+      - name: Run Hollywood session (UTC 03:00)
+        if: github.event.schedule == '0 3 * * *' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.session == 'hollywood' || github.event.inputs.session == 'both'))
+        run: |
+          python - << 'EOF'
+          import asyncio
+          import sys
+          sys.path.insert(0, '.')
+          from zyflix_bot import run_session
+          asyncio.run(run_session("en", "hollywood"))
+          EOF
+        timeout-minutes: 60
+
+      - name: Run Bollywood session (UTC 11:00)
+        if: github.event.schedule == '0 11 * * *' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.session == 'bollywood' || github.event.inputs.session == 'both'))
+        run: |
+          python - << 'EOF'
+          import asyncio
+          import sys
+          sys.path.insert(0, '.')
+          from zyflix_bot import run_session
+          asyncio.run(run_session("hi", "bollywood"))
+          EOF
+        timeout-minutes: 60
+
+      - name: Save posted history
+        uses: actions/cache@v3
+        with:
+          path: posted_movies.json
+          key: posted-${{ github.run_number }}
