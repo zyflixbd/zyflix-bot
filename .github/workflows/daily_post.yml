@@ -1,11 +1,13 @@
 name: ZyFlix Daily Movie Post
 
 on:
-  # Hollywood → BD সকাল ৯:০০ = UTC 03:00
-  # Bollywood → BD বিকাল ৫:০০ = UTC 11:00
+  # ─── BD Time → UTC conversion ─────────────────────────
+  # Bollywood  → BD সকাল ১০:০০  = UTC 04:00
+  # Hollywood  → BD সন্ধ্যা ৬:৩০ = UTC 12:30
+  # ──────────────────────────────────────────────────────
   schedule:
-    - cron: '0 3 * * *'    # Hollywood session
-    - cron: '0 11 * * *'   # Bollywood session
+    - cron: '0 4 * * *'     # Bollywood session  (BD 10:00 AM)
+    - cron: '30 12 * * *'   # Hollywood session  (BD  6:30 PM)
   workflow_dispatch:
     inputs:
       session:
@@ -41,31 +43,40 @@ jobs:
           key: posted-${{ github.run_number }}
           restore-keys: posted-
 
-      - name: Run Hollywood session (UTC 03:00)
-        if: github.event.schedule == '0 3 * * *' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.session == 'hollywood' || github.event.inputs.session == 'both'))
+      # ── Bollywood → BD সকাল ১০:০০ (UTC 04:00) ─────────
+      - name: Run Bollywood session (UTC 04:00 = BD 10:00 AM)
+        if: >
+          github.event.schedule == '0 4 * * *' ||
+          (github.event_name == 'workflow_dispatch' &&
+           (github.event.inputs.session == 'bollywood' ||
+            github.event.inputs.session == 'both'))
         run: |
           python - << 'EOF'
-          import asyncio
-          import sys
-          sys.path.insert(0, '.')
-          from zyflix_bot import run_session
-          asyncio.run(run_session("en", "hollywood"))
-          EOF
-        timeout-minutes: 60
-
-      - name: Run Bollywood session (UTC 11:00)
-        if: github.event.schedule == '0 11 * * *' || (github.event_name == 'workflow_dispatch' && (github.event.inputs.session == 'bollywood' || github.event.inputs.session == 'both'))
-        run: |
-          python - << 'EOF'
-          import asyncio
-          import sys
+          import asyncio, sys
           sys.path.insert(0, '.')
           from zyflix_bot import run_session
           asyncio.run(run_session("hi", "bollywood"))
           EOF
-        timeout-minutes: 60
+        timeout-minutes: 40
+
+      # ── Hollywood → BD সন্ধ্যা ৬:৩০ (UTC 12:30) ───────
+      - name: Run Hollywood session (UTC 12:30 = BD 6:30 PM)
+        if: >
+          github.event.schedule == '30 12 * * *' ||
+          (github.event_name == 'workflow_dispatch' &&
+           (github.event.inputs.session == 'hollywood' ||
+            github.event.inputs.session == 'both'))
+        run: |
+          python - << 'EOF'
+          import asyncio, sys
+          sys.path.insert(0, '.')
+          from zyflix_bot import run_session
+          asyncio.run(run_session("en", "hollywood"))
+          EOF
+        timeout-minutes: 40
 
       - name: Save posted history
+        if: always()
         uses: actions/cache@v3
         with:
           path: posted_movies.json
