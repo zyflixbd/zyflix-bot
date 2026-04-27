@@ -16,17 +16,14 @@ WATCH_BASE   = "https://zyflix.tech"
 POSTED_FILE  = "posted_movies.json"
 
 # ─── POST SCHEDULE (BD TIME) ──────────────────────────
-# Hollywood  → সন্ধ্যা ৬:৩০  (UTC 12:30)
-# Bollywood  → সকাল ১০:০০   (UTC  4:00)
-HOLLYWOOD_TIME = "18:30"   # BD local time
-BOLLYWOOD_TIME = "10:00"   # BD local time
-MOVIES_PER_RUN = 10        # প্রতি session এ ১০টা
-POST_GAP_SEC   = 2 * 60    # ২ মিনিট gap
+HOLLYWOOD_TIME = "18:30"
+BOLLYWOOD_TIME = "10:00"
+MOVIES_PER_RUN = 10
+POST_GAP_SEC   = 2 * 60
 # ──────────────────────────────────────────────────────
 
-# ─── Year priority: নতুন আগে ─────────────────────────
-YEAR_PRIORITY = [2026, 2025, 2024]
-# ──────────────────────────────────────────────────────
+YEAR_PRIORITY      = [2026, 2025, 2024]
+MAX_PAGES_PER_YEAR = 10   # BUG FIX: per-year page cap
 
 TMDB_BASE = "https://api.themoviedb.org/3"
 TMDB_IMG  = "https://image.tmdb.org/t/p/w500"
@@ -41,37 +38,35 @@ def load_posted() -> set:
 
 def save_posted(posted: set):
     with open(POSTED_FILE, "w") as f:
-        json.dump(list(posted), f)
+        json.dump(list(posted), f, indent=2)
 
 
-def fetch_movies_for_year(language: str, year: int, page: int = 1) -> list:
+def fetch_movies_for_year(language: str, year: int, page: int = 1):
     """
-    নির্দিষ্ট year + language দিয়ে TMDB থেকে movies আনো।
-    ─ Hollywood → language = 'en'
-    ─ Bollywood → language = 'hi'
-
-    BUG FIX: আগে year filter ছিল না, তাই old/random movies আসত।
-    এখন primary_release_date দিয়ে year lock করা হয়েছে।
+    Returns (results_list, total_pages)
+    BUG FIX: total_pages ও return করা হচ্ছে যাতে
+    কতটুকু data আছে সেটা জানা যায়।
     """
-    today = date.today().isoformat()
-
-    # 2026 হলে future date যেন না যায়
+    today   = date.today().isoformat()
     date_to = min(f"{year}-12-31", today)
 
     url = f"{TMDB_BASE}/discover/movie"
     params = {
-        "api_key":                    TMDB_API_KEY,
-        "language":                   "en-US",
-        "with_original_language":     language,
-        "sort_by":                    "popularity.desc",
-        "vote_count.gte":             30,            # কম vote হলেও নতুন movies আসবে
-        "primary_release_date.gte":   f"{year}-01-01",
-        "primary_release_date.lte":   date_to,
-        "page":                       page,
+        "api_key":                  TMDB_API_KEY,
+        "language":                 "en-US",
+        "with_original_language":   language,
+        "sort_by":                  "popularity.desc",
+        "vote_count.gte":           30,
+        "primary_release_date.gte": f"{year}-01-01",
+        "primary_release_date.lte": date_to,
+        "page":                     page,
     }
     r = requests.get(url, params=params, timeout=10)
     r.raise_for_status()
-    return r.json().get("results", [])
+    payload     = r.json()
+    results     = payload.get("results", [])
+    total_pages = payload.get("total_pages", 1)
+    return results, total_pages
 
 
 def get_genres(genre_ids: list) -> str:
@@ -98,18 +93,14 @@ def build_caption(movie: dict, category: str) -> str:
     if len(overview) > 300:
         overview = overview[:297] + "…"
 
-    if rating >= 7.5:
-        stars = "⭐⭐⭐⭐⭐"
-    elif rating >= 6.5:
-        stars = "⭐⭐⭐⭐"
-    elif rating >= 5.5:
-        stars = "⭐⭐⭐"
-    else:
-        stars = "⭐⭐"
+    if rating >= 7.5:   stars = "⭐⭐⭐⭐⭐"
+    elif rating >= 6.5: stars = "⭐⭐⭐⭐"
+    elif rating >= 5.5: stars = "⭐⭐⭐"
+    else:               stars = "⭐⭐"
 
     badge = "🎥 Hollywood" if category == "hollywood" else "🎞️ Bollywood"
 
-    caption = (
+    return (
         f"{badge}\n"
         f"🎬 <b>{title}</b> ({year})\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -120,17 +111,15 @@ def build_caption(movie: dict, category: str) -> str:
         f"📖 <b>Story:</b>\n{overview}\n\n"
         f"🍿 <i>Stream for free on ZyFlix!</i>"
     )
-    return caption
 
 
 def build_keyboard(movie: dict) -> InlineKeyboardMarkup:
     movie_id  = movie.get("id")
     watch_url = f"{WATCH_BASE}/?type=movie&id={movie_id}"
-    buttons = [
+    return InlineKeyboardMarkup([
         [InlineKeyboardButton("🎬  ▶  WATCH NOW  ◀  🎬", url=watch_url)],
         [InlineKeyboardButton("🌐  ZyFlix — Free Movie Streaming", url=WATCH_BASE)],
-    ]
-    return InlineKeyboardMarkup(buttons)
+    ])
 
 
 async def post_movie(bot: Bot, movie: dict, category: str):
@@ -158,10 +147,10 @@ async def post_movie(bot: Bot, movie: dict, category: str):
 
 async def run_session(lang_code: str, category: str):
     """
-    lang_code : 'en' = Hollywood | 'hi' = Bollywood
-    category  : 'hollywood' | 'bollywood'
-
     Year order: 2026 → 2025 → 2024 (নতুন আগে)
+
+    BUG FIX #1: প্রতি year এর total_pages জেনে
+    সেই year সম্পূর্ণ exhaust করার পরেই পরের year এ যাবে।
     """
     label = "🎥 Hollywood" if category == "hollywood" else "🎞️ Bollywood"
     print(f"\n{'='*45}")
@@ -172,7 +161,6 @@ async def run_session(lang_code: str, category: str):
     posted = load_posted()
     count  = 0
 
-    # ── নতুন → পুরনো year order এ movies post করো ──
     for year in YEAR_PRIORITY:
         if count >= MOVIES_PER_RUN:
             break
@@ -181,9 +169,11 @@ async def run_session(lang_code: str, category: str):
         page = 1
 
         while count < MOVIES_PER_RUN:
-            movies = fetch_movies_for_year(lang_code, year, page)
-            if not movies:
-                print(f"  ℹ️  No more {year} movies on page {page}.")
+            movies, total_pages = fetch_movies_for_year(lang_code, year, page)
+
+            # এই year এর pages শেষ হলে পরের year এ যাও
+            if not movies or page > min(total_pages, MAX_PAGES_PER_YEAR):
+                print(f"  ℹ️  {year} exhausted at page {page-1}/{total_pages}. Moving to next year.")
                 break
 
             for movie in movies:
@@ -206,7 +196,6 @@ async def run_session(lang_code: str, category: str):
                     save_posted(posted)
                     count += 1
 
-                    # ২ মিনিট gap (শেষ post এর পরে gap দরকার নেই)
                     if count < MOVIES_PER_RUN:
                         print(f"  ⏳ [{count}/{MOVIES_PER_RUN}] Waiting 2 min...")
                         await asyncio.sleep(POST_GAP_SEC)
@@ -221,15 +210,11 @@ async def run_session(lang_code: str, category: str):
     print(f"{'='*45}\n")
 
 
-# ─── Job wrappers (BD local time schedule) ────────────
 def hollywood_job():
-    """সন্ধ্যা ৬:৩০ BD → ১০টা Hollywood"""
     asyncio.run(run_session("en", "hollywood"))
 
 def bollywood_job():
-    """সকাল ১০:০০ BD → ১০টা Bollywood"""
     asyncio.run(run_session("hi", "bollywood"))
-# ──────────────────────────────────────────────────────
 
 
 if __name__ == "__main__":
@@ -241,15 +226,13 @@ if __name__ == "__main__":
     print(f"📅 Year order   : {' → '.join(map(str, YEAR_PRIORITY))}")
     print(f"⏳ Gap per post : 2 minutes\n")
 
-    # NOTE: এই scheduler টা BD timezone এ চলে।
-    # GitHub Actions এ চালালে UTC cron use করো (daily_post.yml দেখো)।
-    schedule.every().day.at(BOLLYWOOD_TIME).do(bollywood_job)   # 10:00 AM BD
-    schedule.every().day.at(HOLLYWOOD_TIME).do(hollywood_job)   # 06:30 PM BD
+    schedule.every().day.at(BOLLYWOOD_TIME).do(bollywood_job)
+    schedule.every().day.at(HOLLYWOOD_TIME).do(hollywood_job)
 
     print("✅ Scheduler active. Waiting for scheduled times...")
     print(f"   Bollywood → {BOLLYWOOD_TIME} BD  |  Hollywood → {HOLLYWOOD_TIME} BD\n")
 
-    # ── Local test করতে চাইলে নিচের দুটো uncomment করো ──
+    # ── Local test ──
     # asyncio.run(run_session("en", "hollywood"))
     # asyncio.run(run_session("hi", "bollywood"))
 
