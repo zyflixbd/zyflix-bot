@@ -44,11 +44,20 @@ def save_posted(posted: set):
 def fetch_movies_for_year(language: str, year: int, page: int = 1):
     """
     Returns (results_list, total_pages)
-    BUG FIX: total_pages ও return করা হচ্ছে যাতে
-    কতটুকু data আছে সেটা জানা যায়।
+    BUG FIX: 2026 এর নতুন movies এ vote কম থাকে,
+    তাই current year এ vote threshold কমানো হয়েছে।
     """
-    today   = date.today().isoformat()
-    date_to = min(f"{year}-12-31", today)
+    current_year = date.today().year
+    today        = date.today().isoformat()
+    date_to      = min(f"{year}-12-31", today)
+
+    # নতুন বছরের movies এ vote কম → threshold কমাও
+    if year >= current_year:
+        min_votes = 5
+    elif year == current_year - 1:
+        min_votes = 20
+    else:
+        min_votes = 30
 
     url = f"{TMDB_BASE}/discover/movie"
     params = {
@@ -56,7 +65,7 @@ def fetch_movies_for_year(language: str, year: int, page: int = 1):
         "language":                 "en-US",
         "with_original_language":   language,
         "sort_by":                  "popularity.desc",
-        "vote_count.gte":           30,
+        "vote_count.gte":           min_votes,
         "primary_release_date.gte": f"{year}-01-01",
         "primary_release_date.lte": date_to,
         "page":                     page,
