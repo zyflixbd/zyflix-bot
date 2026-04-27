@@ -16,11 +16,16 @@ WATCH_BASE   = "https://zyflix.tech"
 POSTED_FILE  = "posted_movies.json"
 
 # ─── POST SCHEDULE (BD TIME) ──────────────────────────
-# Hollywood  → সকাল ৯টা   (5 টা)
-# Bollywood  → বিকাল ৫টা  (5 টা)
-HOLLYWOOD_TIME = "09:00"
-BOLLYWOOD_TIME = "17:00"
-MOVIES_PER_RUN = 5   # প্রতি session এ কতটা
+# Hollywood  → সন্ধ্যা ৬:৩০  (UTC 12:30)
+# Bollywood  → সকাল ১০:০০   (UTC  4:00)
+HOLLYWOOD_TIME = "18:30"   # BD local time
+BOLLYWOOD_TIME = "10:00"   # BD local time
+MOVIES_PER_RUN = 10        # প্রতি session এ ১০টা
+POST_GAP_SEC   = 2 * 60    # ২ মিনিট gap
+# ──────────────────────────────────────────────────────
+
+# ─── Year priority: নতুন আগে ─────────────────────────
+YEAR_PRIORITY = [2026, 2025, 2024]
 # ──────────────────────────────────────────────────────
 
 TMDB_BASE = "https://api.themoviedb.org/3"
@@ -39,19 +44,30 @@ def save_posted(posted: set):
         json.dump(list(posted), f)
 
 
-def fetch_movies_by_language(language: str, page: int = 1) -> list:
+def fetch_movies_for_year(language: str, year: int, page: int = 1) -> list:
     """
-    Hollywood → original_language = en
-    Bollywood → original_language = hi
+    নির্দিষ্ট year + language দিয়ে TMDB থেকে movies আনো।
+    ─ Hollywood → language = 'en'
+    ─ Bollywood → language = 'hi'
+
+    BUG FIX: আগে year filter ছিল না, তাই old/random movies আসত।
+    এখন primary_release_date দিয়ে year lock করা হয়েছে।
     """
+    today = date.today().isoformat()
+
+    # 2026 হলে future date যেন না যায়
+    date_to = min(f"{year}-12-31", today)
+
     url = f"{TMDB_BASE}/discover/movie"
     params = {
-        "api_key":             TMDB_API_KEY,
-        "language":            "en-US",
-        "with_original_language": language,
-        "sort_by":             "popularity.desc",
-        "vote_count.gte":      100,
-        "page":                page,
+        "api_key":                    TMDB_API_KEY,
+        "language":                   "en-US",
+        "with_original_language":     language,
+        "sort_by":                    "popularity.desc",
+        "vote_count.gte":             30,            # কম vote হলেও নতুন movies আসবে
+        "primary_release_date.gte":   f"{year}-01-01",
+        "primary_release_date.lte":   date_to,
+        "page":                       page,
     }
     r = requests.get(url, params=params, timeout=10)
     r.raise_for_status()
@@ -91,11 +107,7 @@ def build_caption(movie: dict, category: str) -> str:
     else:
         stars = "⭐⭐"
 
-    # Category badge
-    if category == "hollywood":
-        badge = "🎥 Hollywood"
-    else:
-        badge = "🎞️ Bollywood"
+    badge = "🎥 Hollywood" if category == "hollywood" else "🎞️ Bollywood"
 
     caption = (
         f"{badge}\n"
@@ -148,6 +160,8 @@ async def run_session(lang_code: str, category: str):
     """
     lang_code : 'en' = Hollywood | 'hi' = Bollywood
     category  : 'hollywood' | 'bollywood'
+
+    Year order: 2026 → 2025 → 2024 (নতুন আগে)
     """
     label = "🎥 Hollywood" if category == "hollywood" else "🎞️ Bollywood"
     print(f"\n{'='*45}")
@@ -157,76 +171,87 @@ async def run_session(lang_code: str, category: str):
     bot    = Bot(token=BOT_TOKEN)
     posted = load_posted()
     count  = 0
-    page   = 1
 
-    while count < MOVIES_PER_RUN:
-        movies = fetch_movies_by_language(lang_code, page=page)
-        if not movies:
+    # ── নতুন → পুরনো year order এ movies post করো ──
+    for year in YEAR_PRIORITY:
+        if count >= MOVIES_PER_RUN:
             break
 
-        for movie in movies:
-            if count >= MOVIES_PER_RUN:
+        print(f"\n  📅 Fetching {year} {label} movies...")
+        page = 1
+
+        while count < MOVIES_PER_RUN:
+            movies = fetch_movies_for_year(lang_code, year, page)
+            if not movies:
+                print(f"  ℹ️  No more {year} movies on page {page}.")
                 break
 
-            movie_id = str(movie["id"])
+            for movie in movies:
+                if count >= MOVIES_PER_RUN:
+                    break
 
-            if movie_id in posted:
-                print(f"  ⏭️  Already posted: {movie['title']}")
-                continue
+                movie_id = str(movie["id"])
 
-            if not movie.get("poster_path"):
-                print(f"  ⚠️  No poster: {movie['title']}")
-                continue
+                if movie_id in posted:
+                    print(f"  ⏭️  Already posted: {movie['title']}")
+                    continue
 
-            try:
-                await post_movie(bot, movie, category)
-                posted.add(movie_id)
-                save_posted(posted)
-                count += 1
+                if not movie.get("poster_path"):
+                    print(f"  ⚠️  No poster: {movie['title']}")
+                    continue
 
-                # Posts এর মাঝে gap — spam avoid
-                if count < MOVIES_PER_RUN:
-                    gap = 10 * 60   # ১০ মিনিট gap
-                    print(f"  ⏳ Waiting 10 min before next post...")
-                    await asyncio.sleep(gap)
+                try:
+                    await post_movie(bot, movie, category)
+                    posted.add(movie_id)
+                    save_posted(posted)
+                    count += 1
 
-            except Exception as e:
-                print(f"  ❌ Error [{movie['title']}]: {e}")
-                await asyncio.sleep(5)
+                    # ২ মিনিট gap (শেষ post এর পরে gap দরকার নেই)
+                    if count < MOVIES_PER_RUN:
+                        print(f"  ⏳ [{count}/{MOVIES_PER_RUN}] Waiting 2 min...")
+                        await asyncio.sleep(POST_GAP_SEC)
 
-        page += 1
+                except Exception as e:
+                    print(f"  ❌ Error [{movie['title']}]: {e}")
+                    await asyncio.sleep(5)
 
-    print(f"\n  🎉 {label} done — Posted {count} movies.")
+            page += 1
+
+    print(f"\n  🎉 {label} done — Posted {count}/{MOVIES_PER_RUN} movies.")
     print(f"{'='*45}\n")
 
 
-# ─── Job wrappers ──────────────────────────────────────
+# ─── Job wrappers (BD local time schedule) ────────────
 def hollywood_job():
+    """সন্ধ্যা ৬:৩০ BD → ১০টা Hollywood"""
     asyncio.run(run_session("en", "hollywood"))
 
 def bollywood_job():
+    """সকাল ১০:০০ BD → ১০টা Bollywood"""
     asyncio.run(run_session("hi", "bollywood"))
 # ──────────────────────────────────────────────────────
 
 
 if __name__ == "__main__":
     print("🤖 ZyFlix Telegram Bot Starting...")
-    print(f"📢 Channel     : {CHANNEL_ID}")
-    print(f"🌐 Website     : {WATCH_BASE}")
-    print(f"🎥 Hollywood   : {MOVIES_PER_RUN} movies at {HOLLYWOOD_TIME} BD time")
-    print(f"🎞️ Bollywood   : {MOVIES_PER_RUN} movies at {BOLLYWOOD_TIME} BD time")
-    print(f"⏳ Gap between : 10 minutes per post\n")
+    print(f"📢 Channel      : {CHANNEL_ID}")
+    print(f"🌐 Website      : {WATCH_BASE}")
+    print(f"🎥 Hollywood    : {MOVIES_PER_RUN} movies at {HOLLYWOOD_TIME} BD time")
+    print(f"🎞️  Bollywood    : {MOVIES_PER_RUN} movies at {BOLLYWOOD_TIME} BD time")
+    print(f"📅 Year order   : {' → '.join(map(str, YEAR_PRIORITY))}")
+    print(f"⏳ Gap per post : 2 minutes\n")
 
-    # Scheduler
-    schedule.every().day.at(HOLLYWOOD_TIME).do(hollywood_job)
-    schedule.every().day.at(BOLLYWOOD_TIME).do(bollywood_job)
+    # NOTE: এই scheduler টা BD timezone এ চলে।
+    # GitHub Actions এ চালালে UTC cron use করো (daily_post.yml দেখো)।
+    schedule.every().day.at(BOLLYWOOD_TIME).do(bollywood_job)   # 10:00 AM BD
+    schedule.every().day.at(HOLLYWOOD_TIME).do(hollywood_job)   # 06:30 PM BD
 
-    print(f"✅ Scheduler active. Waiting for scheduled times...")
-    print(f"   Hollywood → {HOLLYWOOD_TIME}  |  Bollywood → {BOLLYWOOD_TIME}\n")
+    print("✅ Scheduler active. Waiting for scheduled times...")
+    print(f"   Bollywood → {BOLLYWOOD_TIME} BD  |  Hollywood → {HOLLYWOOD_TIME} BD\n")
 
-    # Test করতে চাইলে নিচের দুটো uncomment করো:
-    # hollywood_job()
-    # bollywood_job()
+    # ── Local test করতে চাইলে নিচের দুটো uncomment করো ──
+    # asyncio.run(run_session("en", "hollywood"))
+    # asyncio.run(run_session("hi", "bollywood"))
 
     while True:
         schedule.run_pending()
