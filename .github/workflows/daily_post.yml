@@ -24,9 +24,16 @@ jobs:
   post-movies:
     runs-on: ubuntu-latest
 
+    # ─── posted_movies.json repo-তে push করার permission ──
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+          token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Python 3.11
         uses: actions/setup-python@v4
@@ -36,14 +43,7 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      - name: Restore posted history
-        uses: actions/cache@v3
-        with:
-          path: posted_movies.json
-          key: posted-${{ github.run_number }}
-          restore-keys: posted-
-
-      # ── Bollywood → BD সকাল ১০:০০ (UTC 04:00) ─────────
+      # ── Bollywood → BD সকাল ১০:০০ (UTC 04:00) ──────────
       - name: Run Bollywood session (UTC 04:00 = BD 10:00 AM)
         if: >
           github.event.schedule == '0 4 * * *' ||
@@ -59,7 +59,7 @@ jobs:
           EOF
         timeout-minutes: 40
 
-      # ── Hollywood → BD সন্ধ্যা ৬:৩০ (UTC 12:30) ───────
+      # ── Hollywood → BD সন্ধ্যা ৬:৩০ (UTC 12:30) ────────
       - name: Run Hollywood session (UTC 12:30 = BD 6:30 PM)
         if: >
           github.event.schedule == '30 12 * * *' ||
@@ -75,9 +75,18 @@ jobs:
           EOF
         timeout-minutes: 40
 
-      - name: Save posted history
+      # ─── FIX: Cache না, সরাসরি repo-তে commit করো ──────
+      - name: Commit posted_movies.json to repo
         if: always()
-        uses: actions/cache@v3
-        with:
-          path: posted_movies.json
-          key: posted-${{ github.run_number }}
+        run: |
+          git config user.name  "ZyFlix Bot"
+          git config user.email "bot@zyflix.tech"
+
+          if git diff --quiet posted_movies.json; then
+            echo "✅ No new movies posted — nothing to commit."
+          else
+            git add posted_movies.json
+            git commit -m "🤖 Update posted history [skip ci]"
+            git push
+            echo "✅ posted_movies.json committed to repo."
+          fi
