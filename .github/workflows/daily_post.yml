@@ -1,13 +1,14 @@
 name: ZyFlix Daily Movie Post
 
 on:
-  # ─── BD Time → UTC conversion ─────────────────────────
-  # Bollywood  → BD সকাল ১০:০০  = UTC 04:00
-  # Hollywood  → BD সন্ধ্যা ৬:৩০ = UTC 12:30
-  # ──────────────────────────────────────────────────────
+  # ─── BD Time → UTC (BD = UTC + 6) ──────────────────────
+  # Bollywood  → BD সকাল ১১:০৫  = UTC 05:05  → '5 5 * * *'
+  # Hollywood  → BD সন্ধ্যা ৬:৩০ = UTC 12:30  → '30 12 * * *'
+  # ──────────────────────────────────────────────────────────
   schedule:
-    - cron: '0 4 * * *'     # Bollywood session  (BD 10:00 AM)
-    - cron: '30 12 * * *'   # Hollywood session  (BD  6:30 PM)
+    - cron: '5 5 * * *'      # Bollywood  (BD 11:05 AM)
+    - cron: '30 12 * * *'    # Hollywood  (BD  6:30 PM)
+
   workflow_dispatch:
     inputs:
       session:
@@ -24,7 +25,6 @@ jobs:
   post-movies:
     runs-on: ubuntu-latest
 
-    # ─── posted_movies.json repo-তে push করার permission ──
     permissions:
       contents: write
 
@@ -36,17 +36,16 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Setup Python 3.11
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
       - name: Install dependencies
         run: pip install -r requirements.txt
 
-      # ── Bollywood → BD সকাল ১০:০০ (UTC 04:00) ──────────
-      - name: Run Bollywood session (UTC 04:00 = BD 10:00 AM)
+      - name: Run Bollywood session (BD 11:05 AM)
         if: >
-          github.event.schedule == '0 4 * * *' ||
+          github.event.schedule == '5 5 * * *' ||
           (github.event_name == 'workflow_dispatch' &&
            (github.event.inputs.session == 'bollywood' ||
             github.event.inputs.session == 'both'))
@@ -59,8 +58,7 @@ jobs:
           EOF
         timeout-minutes: 40
 
-      # ── Hollywood → BD সন্ধ্যা ৬:৩০ (UTC 12:30) ────────
-      - name: Run Hollywood session (UTC 12:30 = BD 6:30 PM)
+      - name: Run Hollywood session (BD 6:30 PM)
         if: >
           github.event.schedule == '30 12 * * *' ||
           (github.event_name == 'workflow_dispatch' &&
@@ -75,18 +73,16 @@ jobs:
           EOF
         timeout-minutes: 40
 
-      # ─── FIX: Cache না, সরাসরি repo-তে commit করো ──────
       - name: Commit posted_movies.json to repo
         if: always()
         run: |
           git config user.name  "ZyFlix Bot"
           git config user.email "bot@zyflix.tech"
-
-          if git diff --quiet posted_movies.json; then
-            echo "✅ No new movies posted — nothing to commit."
+          git add posted_movies.json
+          if git diff --staged --quiet; then
+            echo "No changes to commit."
           else
-            git add posted_movies.json
             git commit -m "🤖 Update posted history [skip ci]"
             git push
-            echo "✅ posted_movies.json committed to repo."
+            echo "posted_movies.json saved."
           fi
